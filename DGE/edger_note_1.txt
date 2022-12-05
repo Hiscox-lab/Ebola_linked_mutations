@@ -1,0 +1,128 @@
+curwd = setwd('featureCounts_files')
+
+library("edgeR") 
+
+laneInfo_my<-read.csv("trait.csv")
+counts = readDGE(laneInfo_my$SID)$counts
+
+cpms = cpm(counts) 
+keep = rowSums(cpms>1) >= 5 # at least 1 read in 5 samples
+counts = counts[keep,]
+summary(keep)
+
+#data ditribuation
+library(RColorBrewer)
+colors <- brewer.pal(9, "Set1")
+totCounts <- colSums(counts)
+barplot(totCounts, las=2, col=colors[laneInfo_my[,3]])
+
+#data ditribuation
+boxplot(log2(counts+1), las=2, col=colors[laneInfo_my[,3]])
+
+#put the data into a DGEList object
+cds <- DGEList(counts)
+names(cds)
+
+#TMM normalization for compositional difference between the libraries.
+cds <- calcNormFactors(cds)
+cds$samples
+
+dispersioncpm<-cpm(cds,log=T)
+boxplot(dispersioncpm, las=2, col=colors[cds$samples$group])
+write.csv(dispersioncpm, file="cpmlog.csv", quote=FALSE)
+
+#MDS plot
+plotMDS(cds, main="MDS Plot for Count Data", labels=colnames(cds$counts), col=c("darkgreen", "blue"))
+
+#design matrix
+Tissue<-factor(laneInfo_my$tissue, levels=c("Kidney","Liver","Lung","Spleen"))
+Sex<-factor(laneInfo_my$Sex, levels=c("M","F"))
+Condition<-factor(laneInfo_my$condition, levels=c("control","Wt","G82","L759","N111"))
+
+data.frame(Tissue,Sex,Condition)
+
+design <- model.matrix(~Tissue+Tissue:Sex+Tissue:Condition)
+colnames(design)
+
+#estimating the dispersions
+cds <- estimateDisp(cds, design)
+
+#To perform quasi-likelihood F-tests:
+fit <- glmQLFit(cds,design)
+
+#########in Kidney
+#To find genes that respond to different virus (G82-Wt) in Kidney
+qlf1 <- glmQLFTest(fit, contrast=c(0,0,0,0,0,0,0,0,-1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0))
+topTags(qlf1)
+top1 <- topTags(qlf1, n=nrow(cds$counts))$table
+top1$group<-"Kidney_G82-Wt";
+head(top1)
+write.csv(top1, file="Kidney_G82-Wt.csv", quote=FALSE)
+
+#To find genes that respond to different virus (L759-Wt) in Kidney
+qlf2 <- glmQLFTest(fit, contrast=c(0,0,0,0,0,0,0,0,-1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0))
+topTags(qlf2)
+top2 <- topTags(qlf2, n=nrow(cds$counts))$table
+top2$group<-"Kidney_L759-Wt";
+head(top2)
+write.csv(top2, file="Kidney_L759-Wt.csv", quote=FALSE)
+
+#To find genes that respond to different virus (N111-Wt) in Kidney
+qlf3 <- glmQLFTest(fit, contrast=c(0,0,0,0,0,0,0,0,-1,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0))
+topTags(qlf3)
+top3 <- topTags(qlf3, n=nrow(cds$counts))$table
+top3$group<-"Kidney_N111-Wt";
+head(top3)
+write.csv(top3, file="Kidney_N111-Wt.csv", quote=FALSE)
+
+
+top1$ensembl_gene_id <- rownames(top1)
+top1<-top1[top1$PValue<0.05,]
+top1<-top1[top1$logFC>1|top1$logFC< -1,]
+top1up<-top1[top1$logFC>1,]
+head(top1up)
+top1down<-top1[top1$logFC< -1,]
+head(top1down)
+
+top2$ensembl_gene_id <- rownames(top2)
+top2<-top2[top2$PValue<0.05,]
+top2<-top2[top2$logFC>1|top2$logFC< -1,]
+top2up<-top2[top2$logFC>1,]
+head(top2up)
+top2down<-top2[top2$logFC< -1,]
+head(top2down)
+
+top3$ensembl_gene_id <- rownames(top3)
+top3<-top3[top3$PValue<0.05,]
+top3<-top3[top3$logFC>1|top3$logFC< -1,]
+top3up<-top3[top3$logFC>1,]
+head(top3up)
+top3down<-top3[top3$logFC< -1,]
+head(top3down)
+
+totaltop <- rbind(top1, top2, top3)
+totaltop$condition[totaltop$logFC < -1] <- "Down"
+totaltop$condition[totaltop$logFC > 1] <- "Up"
+
+
+library(AnnotationHub)
+hub <- AnnotationHub()
+pd <- possibleDates(hub)
+pd
+query(hub, c("Mustela","GO"))
+ferretgo <- hub[["AH72558"]] #org.Mustela_putorius_furo.eg.sqlite
+ferretgo
+columns(ferretgo)
+
+library("clusterProfiler")
+
+#biological process (BP), molecular function (MF), and cellular component (CC)
+formula_BP <- compareCluster(ensembl_gene_id~condition+group, data=totaltop, fun="enrichGO", keyType='ENSEMBL', qvalueCutoff = 0.05, OrgDb = ferretgo, ont = "BP", readable = TRUE)
+formula_MF <- compareCluster(ensembl_gene_id~condition+group, data=totaltop, fun="enrichGO", keyType='ENSEMBL', qvalueCutoff = 0.05, OrgDb = ferretgo, ont = "MF", readable = TRUE)
+formula_CC <- compareCluster(ensembl_gene_id~condition+group, data=totaltop, fun="enrichGO", keyType='ENSEMBL', qvalueCutoff = 0.05, OrgDb = ferretgo, ont = "CC", readable = TRUE)
+
+dotplot(formula_BP, x=~condition, color = "qvalue", showCategory = 10) + ggplot2::facet_grid(~group)
+dotplot(formula_MF, x=~condition, color = "qvalue", showCategory = 10) + ggplot2::facet_grid(~group)
+dotplot(formula_CC, x=~condition, color = "qvalue", showCategory = 10) + ggplot2::facet_grid(~group)
+
+

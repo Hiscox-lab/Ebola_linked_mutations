@@ -1,0 +1,321 @@
+#########produce normalised count by DEseq
+curwd = setwd('featureCounts_files')
+
+library("edgeR") 
+
+laneInfo_my<-read.csv("Traits.csv")
+counts = readDGE(laneInfo_my$Sample_ID)$counts
+
+cpms = cpm(counts) 
+keep = rowSums(cpms>1)>= 60 # at least 1 read in 90% samples
+counts = counts[keep,]
+
+library("DESeq2")
+condition <- as.character(laneInfo_my$DPI)
+expt_design <- data.frame(row.names =colnames(counts), condition = c(condition))
+dds<- DESeqDataSetFromMatrix(countData=counts, colData=expt_design, design=~condition)
+counts(dds)
+rlogCOUNTS<-rlog(dds,blind=TRUE) #use blind=TRUE to not account for experimental design
+head(assay(rlogCOUNTS))
+rologcount<-as.data.frame(assay(rlogCOUNTS))
+boxplot(rologcount, las=2)
+
+
+#########prepare input data
+
+library(WGCNA);
+
+# The following setting is important, do not omit.
+
+options(stringsAsFactors = FALSE);
+
+#Read in the female liver data set
+
+datExpr0 = as.data.frame(t(rologcount));
+
+gsg = goodSamplesGenes(datExpr0, verbose = 3);
+gsg$allOK
+
+
+if (!gsg$allOK)
+{
+  # Optionally, print the gene and sample names that were removed:
+  if (sum(!gsg$goodGenes)>0) 
+     printFlush(paste("Removing genes:", paste(names(datExpr0)[!gsg$goodGenes], collapse = ", ")));
+  if (sum(!gsg$goodSamples)>0) 
+     printFlush(paste("Removing samples:", paste(rownames(datExpr0)[!gsg$goodSamples], collapse = ", ")));
+  # Remove the offending genes and samples from the data:
+  datExpr0 = datExpr0[gsg$goodSamples, gsg$goodGenes]
+}
+
+
+##########sampleTree
+sampleTree = hclust(dist(datExpr0), method = "average");
+# Plot the sample tree: Open a graphic output window of size 12 by 9 inches
+# The user should change the dimensions if the window is too large or too small.
+sizeGrWindow(12,9)
+#pdf(file = "Plots/sampleClustering.pdf", width = 12, height = 9);
+par(cex = 0.6);
+par(mar = c(0,4,2,0))
+plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="", cex.lab = 1.5, 
+     cex.axis = 1.5, cex.main = 2)
+
+##########to remove outgroups by cutting tree
+# Plot a line to show the cut
+abline(h = 100, col = "red");
+# Determine cluster under the line
+clust = cutreeStatic(sampleTree, cutHeight = 170, minSize = 10)
+table(clust)
+# clust 1 contains the samples we want to keep.
+keepSamples = (clust==1)
+datExpr = datExpr0[keepSamples, ]
+nGenes = ncol(datExpr)
+nSamples = nrow(datExpr)
+
+
+##########add Traits data
+traitData = read.csv("Traits.csv");
+dim(traitData)
+names(traitData)
+
+# remove columns that hold information we do not need.
+allTraits = traitData[, -c(2)];
+#allTraits = allTraits[, c(2, 11:36) ];
+dim(allTraits)
+names(allTraits)
+
+# Form a data frame analogous to expression data that will hold the clinical traits.
+
+mySamples = rownames(datExpr);
+traitRows = match(mySamples, allTraits$Sample_ID);
+datTraits = allTraits[traitRows, -1];
+rownames(datTraits) = allTraits[traitRows, 1];
+
+collectGarbage();
+
+##########Choose a set of soft-thresholding powers
+# The following setting is important, do not omit.
+
+enableWGCNAThreads()
+allowWGCNAThreads()
+
+
+
+powers = c(c(1:10), seq(from = 12, to=20, by=2))
+# Call the network topology analysis function
+sft = pickSoftThreshold(datExpr, powerVector = powers, verbose = 5)
+# Plot the results:
+sizeGrWindow(9, 5)
+par(mfrow = c(1,2));
+cex1 = 0.9;
+# Scale-free topology fit index as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+     main = paste("Scale independence"));
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     labels=powers,cex=cex1,col="red");
+# this line corresponds to using an R^2 cut-off of h
+abline(h=0.90,col="red")
+# Mean connectivity as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], sft$fitIndices[,5],
+     xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+     main = paste("Mean connectivity"))
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
+
+power = sft$powerEstimate
+power
+
+##########produce network
+
+#Robust correlation. The default correlation method in all functions in WGCNA is standard Pearson correlation. In general, unless there is good reason to believe that there are no outlier measurements, we recommend (and use ourselves) the biweight mid-correlation as a robust alternative. 
+
+net = blockwiseModules(datExpr,
+                       power = power,
+                       TOMType = "signed", #in general we prefer signed (or "signed hybrid") networks
+                       corType = "bicor",
+                       maxPOutliers = 0.1, #also can try 0.05
+                       minModuleSize=30, 
+                       maxBlockSize=100000, 
+                       saveTOMS=TRUE, 
+                       saveTOMFileBase = "test", 
+                       deepSplit=4, 
+                       numericLabels=TRUE)
+
+table(net$colors) #To see how many modules were identified and what the module sizes are.
+
+
+##########################################plot
+
+# open a graphics window
+sizeGrWindow(12, 9)
+# Convert labels to colors for plotting
+mergedColors = labels2colors(net$colors)
+# Plot the dendrogram and the module colors underneath
+plotDendroAndColors(net$dendrograms[[1]], mergedColors[net$blockGenes[[1]]],
+                    "Module colors",
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+
+moduleLabels = net$colors
+moduleColors = labels2colors(net$colors)
+MEs = net$MEs;
+geneTree = net$dendrograms[[1]];
+save(MEs, moduleLabels, moduleColors, geneTree,
+    file = "02-networkConstruction-auto.RData")
+
+################################################
+moduleLabels = net$colors
+moduleColors = labels2colors(net$colors)
+MEs = net$MEs;
+geneTree = net$dendrograms[[1]];
+
+# Define numbers of genes and samples
+nGenes = ncol(datExpr);
+nSamples = nrow(datExpr);
+# Recalculate MEs with color labels
+MEs0 = moduleEigengenes(datExpr, moduleColors)$eigengenes
+MEs = orderMEs(MEs0)
+moduleTraitCor = cor(MEs, datTraits, use = "p");
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples);
+
+################################################plot
+
+sizeGrWindow(10,6)
+# Will display correlations and their p-values
+textMatrix =  paste(signif(moduleTraitCor, 2), "\n(",
+                           signif(moduleTraitPvalue, 1), ")", sep = "");
+dim(textMatrix) = dim(moduleTraitCor)
+par(mar = c(6, 8.5, 3, 3));
+# Display the correlation values within a heatmap plot
+labeledHeatmap(Matrix = moduleTraitCor,
+               xLabels = names(datTraits),
+               yLabels = names(MEs),
+               ySymbols = names(MEs),
+               colorLabels = FALSE,
+               colors = greenWhiteRed(50),
+               textMatrix = textMatrix,
+               setStdMargins = FALSE,
+               cex.text = 0.5,
+               zlim = c(-1,1),
+               main = paste("Module-trait relationships"))
+
+#####will return all probe IDs included in the analysis and, GO and KEGG enrichment
+moduleid<-names(datExpr)[moduleColors=="blue"]
+
+
+####GO####
+colourable<-data.frame(names(datExpr))
+colourable$colour<-as.character(moduleColors)
+colnames(colourable) <- c("ensembl_gene_id","colour")
+write.table(colourable, file="colourable.xls", quote=FALSE, row.names =F, sep="\t")
+colourable <- read.csv(file="colourable.xls",header =T, sep="\t")
+
+
+library(AnnotationHub)
+hub <- AnnotationHub()
+pd <- possibleDates(hub)
+pd
+query(hub, c("Mustela","GO"))
+ferretgo <- hub[["AH72558"]] #org.Mustela_putorius_furo.eg.sqlite
+ferretgo
+columns(ferretgo)
+
+
+library("clusterProfiler")
+#top3up_test <- enrichGO(row.names(top3up), keyType='ENSEMBL', qvalueCutoff = 0.05, OrgDb = ferretgo, ont = "BP", readable = TRUE)
+
+formula_MF <- compareCluster(ensembl_gene_id~colour, data= colourable, fun="enrichGO", keyType='ENSEMBL', pvalueCutoff = 0.05, OrgDb = ferretgo, ont = "MF", readable = TRUE)
+formula_BP <- compareCluster(ensembl_gene_id~colour, data= colourable, fun="enrichGO", keyType='ENSEMBL', pvalueCutoff = 0.05, OrgDb = ferretgo, ont = "BP", readable = TRUE)
+formula_CC <- compareCluster(ensembl_gene_id~colour, data= colourable, fun="enrichGO", keyType='ENSEMBL', pvalueCutoff = 0.05, OrgDb = ferretgo, ont = "CC", readable = TRUE)
+
+#formula_BP_simp <- simplify(formula_BP, cutoff = 0.7, by = "pvalue", select_fun = min) 
+
+head(as.data.frame(formula_MF))
+head(as.data.frame(formula_BP))
+head(as.data.frame(formula_CC))
+
+dotplot(formula_BP, x=~colour, color = "pvalue", showCategory = 10)
+dotplot(formula_MF, x=~colour, color = "pvalue", showCategory = 10)
+dotplot(formula_CC, x=~colour, color = "pvalue", showCategory = 10)
+
+write.table(as.data.frame(formula_MF),"GO_MF.xls",sep="\t", row.names =FALSE)
+write.table(as.data.frame(formula_BP),"GO_BP.xls",sep="\t", row.names =FALSE)
+write.table(as.data.frame(formula_CC),"GO_CC.xls",sep="\t", row.names =FALSE)
+
+####KEGG####
+Ko<-read.table(file="ferret_KAAS_eu.ko.txt",sep = "\t", header = FALSE,fill = TRUE)
+colnames(Ko) <- c("ensembl_gene_id","ko")
+kocolour<-merge(x = colourable, y = Ko, by = "ensembl_gene_id",sort = FALSE)
+universe<-Ko$ko
+
+formula_kegg <- compareCluster(ko~colour, data=kocolour, fun="enrichKEGG", qvalueCutoff = 0.05, organism="ko", universe= universe)
+
+head(as.data.frame(formula_kegg))
+
+
+dotplot(formula_kegg, x=~colour, showCategory = 10, color = "p.adjust")
+
+write.table(as.data.frame(formula_kegg),"KEGG_enrichment.xls",sep="\t", row.names =FALSE)
+
+
+
+#########################################TopHubInEachModule
+
+chooseTopHubInEachModule(datExpr, moduleColors, omitColors = "grey", power = power, type = "signed")
+
+################################################input annotation
+
+probes = names(datExpr)
+
+library(biomaRt)
+listMarts() #看看有多少数据库资源
+mart = useMart('ensembl')
+listDatasets(mart)
+ensembl = useMart("ensembl",dataset="mpfuro_gene_ensembl")# 这是一步法选择ferret的ensembl数据库代码。
+listAttributes(ensembl)
+preannot <- getBM(mart = ensembl, values = probes, filters= "ensembl_gene_id", attributes = c("ensembl_gene_id","external_gene_name", "description","entrezgene_id"))
+write.table(preannot, file="preannot.xls", quote=FALSE, row.names =F, sep="\t")
+annot <- read.delim(file="annot.xls", sep="\t",head=T)
+dim(annot)
+names(annot)
+
+
+
+#########################################Exporting to Cytoscape
+# Recalculate topological overlap if needed
+TOM = TOMsimilarityFromExpr(datExpr, power = power);
+
+allmoduleCor<-sub("ME", "", row.names(moduleTraitCor))
+for(selectedcolour in allmoduleCor){    print(selectedcolour) 
+    # Select modules
+    modules <- selectedcolour
+    # Select module probes
+    probes = names(datExpr)
+    inModule = is.finite(match(moduleColors, modules));
+    modProbes = probes[inModule];
+    modGenes = annot$external_gene_name[match(modProbes, annot$ensembl_gene_id)];
+    # Select the corresponding Topological Overlap
+    modTOM = TOM[inModule, inModule];
+    dimnames(modTOM) = list(modProbes, modProbes)
+    # Export the network into edge and node list files Cytoscape can read
+    cyt = exportNetworkToCytoscape(modTOM,
+    edgeFile = paste("CytoscapeInput-edges-", paste(modules, collapse="-"), ".txt", sep=""),
+    nodeFile = paste("CytoscapeInput-nodes-", paste(modules, collapse="-"), ".txt", sep=""),
+    weighted = TRUE,
+    threshold = 0.02,
+    nodeNames = modProbes,
+    altNodeNames = modGenes,
+    nodeAttr = moduleColors[inModule]);}
+
+#count the gene in each module
+allmoduleCor<-sub("ME", "", row.names(moduleTraitCor))
+for(selectedcolour in allmoduleCor){
+moduleid<-names(datExpr)[moduleColors==selectedcolour]
+numbers<-c(selectedcolour,length(moduleid))
+print(numbers)
+}
+
+
+
+
+

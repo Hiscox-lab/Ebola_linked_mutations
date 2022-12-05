@@ -1,0 +1,106 @@
+curwd = setwd('featureCounts_files')
+
+library("edgeR") 
+
+laneInfo_my<-read.csv("trait.csv")
+counts = readDGE(laneInfo_my$SID)$counts
+
+cpms = cpm(counts) 
+keep = rowSums(cpms>1) >= 5 # at least 1 read in 5 samples
+counts = counts[keep,]
+summary(keep)
+
+#data ditribuation
+library(RColorBrewer)
+colors <- brewer.pal(9, "Set1")
+totCounts <- colSums(counts)
+barplot(totCounts, las=2, col=colors[laneInfo_my[,3]])
+
+#data ditribuation
+boxplot(log2(counts+1), las=2, col=colors[laneInfo_my[,3]])
+
+#put the data into a DGEList object
+#group=laneInfo_my$mix
+#cds <- DGEList(counts, group = group )
+cds <- DGEList(counts)
+names(cds)
+
+#TMM normalization for compositional difference between the libraries.
+cds <- calcNormFactors(cds)
+cds$samples
+
+dispersioncpm<-cpm(cds)
+boxplot(log2(dispersioncpm+1), las=2, col=colors[cds$samples$group])
+
+#MDS plot
+plotMDS(cds, main="MDS Plot for Count Data", labels=colnames(cds$counts), col=c("darkgreen", "blue"))
+
+#design matrix
+Tissue<-factor(laneInfo_my$tissue, levels=c("Kidney","Liver","Lung","Spleen"))
+Sex<-factor(laneInfo_my$Sex, levels=c("M","F"))
+Condition<-factor(laneInfo_my$condition, levels=c("control","G82","L759","N111","Wt"))
+
+data.frame(Tissue,Sex,Condition)
+
+design <- model.matrix(~Tissue+Tissue:Sex+Tissue:Condition)
+colnames(design)
+
+#estimating the dispersions
+cds <- estimateDisp(cds, design)
+
+#To perform quasi-likelihood F-tests:
+fit <- glmQLFit(cds,design)
+
+#To find genes that respond differently to the virus in Kidney vs control.
+qlf1 <- glmQLFTest(fit, coef=c(9,13,17,21))
+topTags(qlf1)
+top1 <- topTags(qlf1, n=nrow(cds$counts))$table
+head(top1)
+write.csv(top1, file="Kidney_control_all.csv", quote=FALSE)
+
+#To find genes that respond differently to the virus in Liver vs control.
+qlf2 <- glmQLFTest(fit, coef=c(10,14,18,22))
+topTags(qlf2)
+top2 <- topTags(qlf2, n=nrow(cds$counts))$table
+head(top2)
+write.csv(top2, file="Liver_control_all.csv", quote=FALSE)
+
+#To find genes that respond differently to the virus in Lung vs control.
+qlf3 <- glmQLFTest(fit, coef=c(11,15,19,23))
+topTags(qlf3)
+top3 <- topTags(qlf3, n=nrow(cds$counts))$table
+head(top3)
+write.csv(top3, file="Lung_control_all.csv", quote=FALSE)
+
+#To find genes that respond differently to the virus in Spleen vs control.
+qlf4 <- glmQLFTest(fit, coef=c(12,16,20,24))
+topTags(qlf4)
+top4 <- topTags(qlf4, n=nrow(cds$counts))$table
+head(top4)
+write.csv(top4, file="Spleen_control_all.csv", quote=FALSE)
+
+
+######GO specific
+Run "perl parse.pl" 
+datExpr <-read.csv("all_control_up_down_specific.csv")
+colnames(datExpr) <- c("ensembl_gene_id","organs","group")
+
+library(AnnotationHub)
+hub <- AnnotationHub()
+query(hub, c("Mustela","GO"))
+ferretgo <- hub[["AH72558"]] #org.Mustela_putorius_furo.eg.sqlite
+ferretgo
+
+library("clusterProfiler") #v3.12.0 
+formula_MF <- compareCluster(ensembl_gene_id~group+organs, keyType='ENSEMBL', data= datExpr, fun="enrichGO", qvalueCutoff = 0.01, OrgDb = ferretgo, ont = "MF", readable = TRUE)
+#min_formula_MF <- simplify(formula_MF, cutoff=0.7, by="p.adjust", select_fun=min)
+formula_BP <- compareCluster(ensembl_gene_id~group+organs, data= datExpr, keyType='ENSEMBL', fun="enrichGO", qvalueCutoff = 0.01, OrgDb = ferretgo, ont = "BP", readable = TRUE)
+#min_formula_BP  <- simplify(formula_BP, cutoff=0.7, by="p.adjust", select_fun=min)
+formula_CC <- compareCluster(ensembl_gene_id~group+organs, data= datExpr, keyType='ENSEMBL', fun="enrichGO", qvalueCutoff = 0.01, OrgDb = ferretgo, ont = "CC", readable = TRUE)
+#min_formula_CC  <- simplify(formula_CC, cutoff=0.7, by="p.adjust", select_fun=min)
+
+dotplot(formula_MF, x=~group, showCategory = 10, color = "qvalue") + ggplot2::facet_grid(~organs)
+dotplot(formula_BP, x=~group, showCategory = 10, color = "qvalue") + ggplot2::facet_grid(~organs)
+dotplot(formula_CC, x=~group, showCategory = 10, color = "qvalue") + ggplot2::facet_grid(~organs)
+
+

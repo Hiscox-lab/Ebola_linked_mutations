@@ -1,0 +1,55 @@
+curwd = setwd(featureCounts_files')
+
+library("edgeR") 
+
+laneInfo_my<-read.csv("Traits.csv")
+
+counts = readDGE(laneInfo_my$Sample_ID)$counts
+
+library(EBSeq)
+Sizes <- MedianNorm(counts)
+normalizedData <- GetNormalizedMat(counts, Sizes)
+
+library(Trendy)
+time.vector <- c(rep(0, 17), rep(3,19), rep(5, 21), rep(7, 9))
+time.vector
+res <- trendy(Data = normalizedData, tVectIn = time.vector, NCores=56)
+res <- results(res)
+res.top <- topTrendy(res)
+res.top$AdjustedR2
+res.trend <- trendHeatmap(res.top)
+
+write.csv(res.top[["Segment.Trends"]], file="Trends.csv", quote=FALSE, row.names =T)
+write.csv(res.top[["Breakpoints"]], file="Breakpoints.csv", quote=FALSE, row.names =T)
+
+res.bp <- breakpointDist(res.top)
+barplot(res.bp, ylab="Number of breakpoints", col="lightblue")
+
+trendMat <- res.top$Trends
+hc.results <- hclust(dist(trendMat))plot(hc.results) #Decide how many clusters to choosehc.groups <- cutree(hc.results, k = 4)hc.groups 
+
+firstup<-names(res.trend$firstup)
+firstdown<-names(res.trend$firstdown)
+firstnochange<-names(res.trend$firstnochange)
+
+
+library("clusterProfiler")
+
+#biological process (BP), molecular function (MF), and cellular component (CC)
+formula_All <- compareCluster(ensembl_gene_id~condition, data= gene_ids, fun="enrichGO", keyType='ENSEMBL', qvalueCutoff = 0.05, OrgDb = ferretgo, ont = "ALL", readable = TRUE)
+
+dotplot(formula_All, x="condition", color = "qvalue", showCategory = 10, label_format=100)
+
+
+
+Trends_Breakpoints<-read.csv("Trends_Breakpoints.csv")
+
+library("clusterProfiler")
+
+#biological process (BP), molecular function (MF), and cellular component (CC)
+formula_All <- compareCluster(ID~Cluster, data= Trends_Breakpoints, fun="enrichGO", keyType='ENSEMBL', qvalueCutoff = 0.05, OrgDb = ferretgo, ont = "ALL", readable = TRUE)
+
+dotplot(formula_All, x="Cluster", color = "qvalue", label_format=100)
+
+
+
